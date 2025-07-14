@@ -385,7 +385,7 @@ def main():
                     if st.button("🧪 Test Stream"):
                         test_video_id = video_options[selected_video]
                         try:
-                            response = requests.head(f"http://localhost:8080/stream/{test_video_id}", timeout=5)
+                            response = requests.head(f"http://localhost:8081/stream/{test_video_id}", timeout=5)
                             st.success(f"✅ Stream test successful: {response.status_code}")
                             
                             # Check status

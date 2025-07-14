@@ -552,14 +552,20 @@ async def generate_progressive_stream_fixed(video_id: str):
 async def upload_video(file: UploadFile = File(...)):
     logger.info(f"[Upload] Upload started for {file.filename}")
     temp_path = f"temp_{file.filename}"
-    with open(temp_path, "wb") as f:
-        content = await file.read()
-        f.write(content)
-
+    
     try:
+        # Save uploaded file
+        with open(temp_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        
+        logger.info(f"[Upload] File saved: {temp_path} ({len(content)} bytes)")
+
+        # Process video into chunks
         metadata = file_processor.process_video(temp_path)
         logger.info(f"[Upload] Processed: {metadata.filename} with {len(metadata.chunks)} chunks")
 
+        # Register with DHT
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.connect(('localhost', 8000))
             message = {
@@ -569,11 +575,91 @@ async def upload_video(file: UploadFile = File(...)):
                 'chunk_hashes': [chunk['hash'] for chunk in metadata.chunks]
             }
             sock.send(json.dumps(message).encode())
+            
+            # Wait for DHT response
+            data = b''
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                try:
+                    response = json.loads(data.decode())
+                    logger.info(f"[Upload] DHT registration: {response}")
+                    break
+                except json.JSONDecodeError:
+                    continue
 
-        return {"status": "success", "video_id": metadata.video_id}
+        # Distribute chunks to peers
+        await distribute_chunks_to_peers(metadata)
+        
+        logger.info(f"[Upload] Upload complete for {metadata.video_id}")
+        return {"status": "success", "video_id": metadata.video_id, "filename": metadata.filename}
+        
+    except Exception as e:
+        logger.error(f"[Upload] Upload failed: {e}")
+        return {"status": "error", "message": str(e)}
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
+async def distribute_chunks_to_peers(metadata):
+    """Distribute chunks to available peers"""
+    logger.info(f"[Upload] Distributing {len(metadata.chunks)} chunks to peers")
+    
+    distributed_count = 0
+    for i, chunk_info in enumerate(metadata.chunks):
+        chunk_data = file_processor.get_chunk_data(metadata.video_id, chunk_info['index'])
+        if not chunk_data:
+            continue
+            
+        try:
+            # Get placement from DHT
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.connect(('localhost', 8000))
+                message = {
+                    'type': 'get_placement',
+                    'chunk_hash': chunk_info['hash']
+                }
+                sock.send(json.dumps(message).encode())
+                
+                data = b''
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                    try:
+                        response = json.loads(data.decode())
+                        break
+                    except json.JSONDecodeError:
+                        continue
+            
+            # Send to target peers
+            target_peers = response.get('target_peers', [])
+            for target_peer in target_peers:
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as peer_sock:
+                        peer_sock.connect((target_peer['host'], target_peer['port']))
+                        message = {
+                            'type': 'store_chunk',
+                            'chunk_hash': chunk_info['hash'],
+                            'chunk_data': chunk_data.hex()
+                        }
+                        peer_sock.send(json.dumps(message).encode())
+                        
+                        # Wait for response
+                        response_data = peer_sock.recv(1024)
+                        if response_data:
+                            distributed_count += 1
+                            
+                except Exception as e:
+                    logger.warning(f"[Upload] Failed to send chunk to {target_peer}: {e}")
+                    
+        except Exception as e:
+            logger.error(f"[Upload] Error distributing chunk {i}: {e}")
+    
+    logger.info(f"[Upload] Distributed {distributed_count}/{len(metadata.chunks)} chunks")
 
 if __name__ == "__main__":
     import uvicorn
