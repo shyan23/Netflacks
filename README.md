@@ -218,6 +218,14 @@ pip install streamlit
 # Verify FFmpeg installation
 ffmpeg -version
 ```
+### **make a .env file**
+```bash
+#In the .env file,paste the following lines
+HOST_IP=localhost
+HOST_PORT=9004
+DHT_PORT=8000
+API_PORT=8080
+```
 
 ### **Launch the Network**
 ```bash
@@ -234,6 +242,7 @@ streamlit run main.py
 2. **Process** → System optimizes and chunks the video automatically
 3. **Distribute** → Chunks spread across peer network via DHT
 4. **Stream** → Click play for instant Netflix-like experience
+
 
 ---
 
